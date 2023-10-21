@@ -1,6 +1,0 @@
-gotify-handler
-parsedatetime
-pycryptodome
-python-daemon
-requests
-tzdata
