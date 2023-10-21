@@ -1,0 +1,52 @@
+{
+    "name": "shopgoodwill-ts-api",
+    "version": "0.1.0",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/pkmnct/shopgoodwill-ts-api.git"
+    },
+    "author": "George W. Walker",
+    "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/pkmnct/shopgoodwill-ts-api/issues"
+    },
+    "dependencies": {
+        "node-fetch": "^3.3.2",
+        "typescript": "^5.2.2"
+    },
+    "engines": {
+        "node": ">=16.0.0"
+    },
+    "devDependencies": {
+        "@types/node-fetch": "^2.6.2",
+        "@typescript-eslint/eslint-plugin": "^5.61.0",
+        "@typescript-eslint/parser": "^5.61.0",
+        "eslint": "^8.44.0",
+        "eslint-plugin-import": "^2.27.5",
+        "eslint-plugin-promise": "^6.1.1"
+    },
+    "eslintConfig": {
+        "parser": "@typescript-eslint/parser",
+        "parserOptions": {
+            "ecmaVersion": 2021,
+            "sourceType": "module"
+        },
+        "extends": [
+            "eslint:recommended",
+            "plugin:@typescript-eslint/recommended",
+            "plugin:promise/recommended",
+            "plugin:import/recommended",
+            "plugin:import/typescript"
+        ],
+        "plugins": [
+            "@typescript-eslint",
+            "promise",
+            "import"
+        ]
+    },
+    "scripts": {
+        "build": "tsc",
+        "prepare": "npm run build"
+    },
+    "type": "module"
+}
