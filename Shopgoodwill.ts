@@ -125,7 +125,6 @@ export class Shopgoodwill {
       // All good!
     } else {
       delete this.shopgoodwill_session_headers["Authorization"];
-      console.log(res);
       if (res.status !== 401) throw new Error(JSON.stringify(res));
     }
 
