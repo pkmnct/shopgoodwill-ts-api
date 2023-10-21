@@ -14,7 +14,7 @@ export interface SavedSearch {
   todo?: undefined;
 }
 
-export class ShopGoodwill {
+export class Shopgoodwill {
   public LOGIN_PAGE_URL = "https://shopgoodwill.com/signin";
   public API_ROOT = "https://buyerapi.shopgoodwill.com/api";
   public ENCRYPTION_INFO = {
@@ -149,24 +149,8 @@ export class ShopGoodwill {
       clientIpAddress: "0.0.0.4",
       appVersion: "00099a1be3bb023ff17d",
       username: username,
-      password: "YRJ8i08KbG45HBNfOWddCt2CrfbU%2BbvjOnj%2F71ysL9g%3D", //TODO password,
+      password: password,
     };
-
-    console.log(
-      "Username should be",
-      "ySJjk%2F2FCfn93G2DoFKAqg%3D%3D",
-      " and is ",
-      username
-    );
-    if (username !== "ySJjk%2F2FCfn93G2DoFKAqg%3D%3D")
-      throw new Error("invalid username");
-
-    console.log(
-      "password should be",
-      "YRJ8i08KbG45HBNfOWddCt2CrfbU%2BbvjOnj%2F71ysL9g%3D",
-      " and is ",
-      password
-    );
 
     // Ensure the site isn't down?
     await this.get(this.LOGIN_PAGE_URL);
@@ -214,4 +198,4 @@ export class ShopGoodwill {
   };
 }
 
-export default ShopGoodwill;
+export default Shopgoodwill;
