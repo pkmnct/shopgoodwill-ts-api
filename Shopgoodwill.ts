@@ -14,6 +14,12 @@ export interface SavedSearch {
   todo?: undefined;
 }
 
+export interface ShopgoodwillApiResponse extends Response {
+  json: () => Promise<{
+    [key: string]: unknown;
+  }>;
+}
+
 export class Shopgoodwill {
   public LOGIN_PAGE_URL = "https://shopgoodwill.com/signin";
   public API_ROOT = "https://buyerapi.shopgoodwill.com/api";
@@ -30,7 +36,6 @@ export class Shopgoodwill {
     "User-Agent":
       "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:12.0) Gecko/20100101 Firefox/12.0",
   };
-  private logged_in = false;
   private auth_info: AuthInfo;
 
   constructor(auth_info: AuthInfo) {
@@ -68,6 +73,11 @@ export class Shopgoodwill {
     }
   };
 
+  /**
+   * Replicates SGW's "encryption" on username/password fields.
+   *
+   * It really isn't necessary since you can rip the encrypted values from your browser, but it'll make initial config just a tad easier
+   */
   private encrypt_login_value = (value: string): string => {
     throw new Error(
       "Not yet implemented. Please provide your pre-encrypted username and password"
@@ -95,27 +105,29 @@ export class Shopgoodwill {
     // return urllib.parse.quote(base64.b64encode(ciphertext))
   };
 
-  public get = async (path: string): Promise<Response> =>
-    await fetch(this.API_ROOT + path, {
+  public get = async (path: string): Promise<ShopgoodwillApiResponse> =>
+    (await fetch(this.API_ROOT + path, {
       headers: this.shopgoodwill_session_headers,
-    });
+    })) as ShopgoodwillApiResponse;
 
   public post = async (
     path: string,
     options?: RequestInit
-  ): Promise<Response> =>
-    await fetch(this.API_ROOT + path, {
+  ): Promise<ShopgoodwillApiResponse> =>
+    (await fetch(this.API_ROOT + path, {
       // eslint-disable-next-line @typescript-eslint/ban-ts-comment
       // @ts-ignore
       headers: this.shopgoodwill_session_headers,
       method: "POST",
       ...options,
-    });
+    })) as ShopgoodwillApiResponse;
 
+  /**
+   *  Simple function to test an access token by looking at the user's saved searches
+   */
   public access_token_is_valid = async (
     access_token: string
   ): Promise<boolean> => {
-    this.logged_in = true;
     this.shopgoodwill_session_headers[
       "Authorization"
     ] = `Bearer ${access_token}`;
@@ -131,6 +143,9 @@ export class Shopgoodwill {
     return true;
   };
 
+  /**
+   * Raise an exception if an endpoint requiring login is called without valid auth
+   */
   private check_auth = (): boolean => {
     if (!this.shopgoodwill_session_headers["Authorization"]) {
       throw new Error("Not authenticated");
@@ -138,6 +153,9 @@ export class Shopgoodwill {
     return true;
   };
 
+  /**
+   * Do the login request
+   */
   public login = async (
     username: string,
     password: string
@@ -151,23 +169,18 @@ export class Shopgoodwill {
       password: password,
     };
 
-    // Ensure the site isn't down?
-    await this.get(this.LOGIN_PAGE_URL);
-
     const res = await this.post("/SignIn/Login", {
       body: JSON.stringify(login_params),
     });
 
-    const resJson = await (res.json() as any);
+    const resJson = await res.json();
     const token = resJson["accessToken"];
 
     if (token) {
-      this.auth_info.accessToken = token;
+      this.auth_info.accessToken = token as string;
       this.shopgoodwill_session_headers[
         "Authorization"
       ] = `Bearer ${this.auth_info.accessToken}`;
-
-      this.logged_in = true;
 
       return true;
     } else {
@@ -179,11 +192,14 @@ export class Shopgoodwill {
     this.check_auth();
     const res = await this.post("/SaveSearches/GetSaveSearches");
 
-    return ((await res.json()) as any)["data"];
+    return (await res.json())["data"] as SavedSearch[];
   };
 
+  /**
+   * Returns the logged in user's favorites, and all of their (visible) attributes.
+   */
   public get_favorites = async (
-    favorite_type: "all" | "open" | "closed"
+    favorite_type: "all" | "open" | "closed" = "open"
   ): Promise<ShopgoodwillFavorite[]> => {
     this.check_auth();
     const res = await this.post(
@@ -193,7 +209,51 @@ export class Shopgoodwill {
       }
     );
 
-    return ((await res.json()) as any)["data"];
+    return (await res.json())["data"] as ShopgoodwillFavorite[];
+  };
+
+  /**
+   *  Given an Item ID, attempt to add it to the logged in user's favorites, optionally with a note.
+   */
+  public add_favorite = async (
+    item_id: number,
+    note?: string
+  ): Promise<void> => {
+    this.check_auth();
+    await this.get(`/Favorite/AddToFavorite?itemId=${item_id}`);
+
+    if (note) {
+      await this.add_favorite_note(item_id, note);
+    }
+  };
+
+  /**
+   *  Given an Item ID of an item in the logged in user's favorites, add the requested note to it.
+   */
+  public add_favorite_note = async (
+    item_id: number,
+    note: string
+  ): Promise<void> => {
+    this.check_auth();
+    if (note.length > this.FAVORITES_MAX_NOTE_LENGTH) {
+      note = note.substring(0, this.FAVORITES_MAX_NOTE_LENGTH);
+    }
+
+    const favorites = await this.get_favorites();
+    const filteredFavorite = favorites.filter(
+      (item) => item.itemId === item_id
+    );
+    if (filteredFavorite.length) {
+      const watchlist_id = filteredFavorite[0].watchlistId;
+      await this.post("/Favorite/Save", {
+        body: JSON.stringify({
+          notes: note,
+          watchlistId: watchlist_id,
+        }),
+      });
+    } else {
+      throw new Error(`Item ${item_id} not in user's favorites!`);
+    }
   };
 }
 
