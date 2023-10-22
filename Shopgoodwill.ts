@@ -1,4 +1,4 @@
-import { ShopgoodwillFavorite } from "./Favorite.ts";
+import { ShopgoodwillFavorite } from "./Favorite";
 import fetch, { Response } from "node-fetch";
 import { createCipheriv } from "crypto";
 

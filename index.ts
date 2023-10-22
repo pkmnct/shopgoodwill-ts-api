@@ -1,2 +1,2 @@
-export { default } from "./Shopgoodwill.ts";
-export * from "./Shopgoodwill.ts";
+export { default } from "./Shopgoodwill";
+export * from "./Shopgoodwill";
