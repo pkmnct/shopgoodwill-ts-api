@@ -1,2 +1,2 @@
-export { default } from "./Shopgoodwill";
-export * from "./Shopgoodwill";
+export { default } from "./Shopgoodwill.js";
+export * from "./Shopgoodwill.js";
