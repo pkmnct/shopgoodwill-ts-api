@@ -128,3 +128,5 @@ dist
 !out/
 out/*
 !out/upcDb
+# Config files that are written in JavaScript
+!eslint.config.js

@@ -1,0 +1,31 @@
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Wait a few days before proposing a release, so a compromised or broken
+    # version is usually pulled first
+    cooldown:
+      default-days: 5
+    groups:
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # Tracks the oldest supported Node major, not the newest release
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 5
+    groups:
+      actions:
+        patterns: ["*"]

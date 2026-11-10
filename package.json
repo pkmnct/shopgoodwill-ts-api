@@ -1,6 +1,7 @@
 {
     "name": "shopgoodwill-ts-api",
-    "version": "0.1.4",
+    "version": "0.2.0",
+    "description": "TypeScript client for the Shopgoodwill buyer API",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/pkmnct/shopgoodwill-ts-api.git"
@@ -10,44 +11,36 @@
     "bugs": {
         "url": "https://github.com/pkmnct/shopgoodwill-ts-api/issues"
     },
-    "dependencies": {
-        "node-fetch": "^3.3.2"
-    },
     "engines": {
-        "node": ">=16.0.0"
-    },
-    "devDependencies": {
-        "@types/node-fetch": "^2.6.2",
-        "@typescript-eslint/eslint-plugin": "^5.61.0",
-        "@typescript-eslint/parser": "^5.61.0",
-        "eslint": "^8.44.0",
-        "eslint-plugin-import": "^2.27.5",
-        "eslint-plugin-promise": "^6.1.1",
-        "typescript": "^5.2.2"
-    },
-    "eslintConfig": {
-        "parser": "@typescript-eslint/parser",
-        "parserOptions": {
-            "ecmaVersion": 2021,
-            "sourceType": "module"
-        },
-        "extends": [
-            "eslint:recommended",
-            "plugin:@typescript-eslint/recommended",
-            "plugin:promise/recommended",
-            "plugin:import/recommended",
-            "plugin:import/typescript"
-        ],
-        "plugins": [
-            "@typescript-eslint",
-            "promise",
-            "import"
-        ]
-    },
-    "scripts": {
-        "build": "tsc",
-        "prepublish": "npm run build"
+        "node": ">=22"
     },
     "type": "module",
-    "main": "index.js"
+    "main": "index.js",
+    "types": "index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./index.d.ts",
+            "default": "./index.js"
+        }
+    },
+    "files": [
+        "*.js",
+        "*.d.ts",
+        "*.map",
+        "!eslint.config.js"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit",
+        "lint": "eslint .",
+        "prepublishOnly": "npm run build"
+    },
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@types/node": "^22.0.0",
+        "eslint": "^10.14.0",
+        "eslint-plugin-promise": "^7.3.0",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.72.2"
+    }
 }

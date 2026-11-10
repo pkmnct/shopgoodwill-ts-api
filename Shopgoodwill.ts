@@ -1,6 +1,5 @@
 import { ShopgoodwillFavorite } from "./Favorite.js";
-import fetch, { Response } from "node-fetch";
-import { createCipheriv } from "crypto";
+import { createCipheriv } from "node:crypto";
 
 export interface AuthInfo {
   userName?: string;
@@ -29,6 +28,8 @@ export class Shopgoodwill {
     block_size: 16,
   };
   public FAVORITES_MAX_NOTE_LENGTH = 256;
+  /** Give up on a request to Shopgoodwill after this many milliseconds. */
+  public REQUEST_TIMEOUT_MS = 30_000;
 
   private shopgoodwill_session_headers: { [key: string]: string } = {
     "Content-Type": "application/json",
@@ -38,9 +39,12 @@ export class Shopgoodwill {
   };
   private auth_info: AuthInfo;
 
+  /**
+   * Stores the credentials only. Call `authenticate()` and await it before
+   * using endpoints that need a login.
+   */
   constructor(auth_info: AuthInfo) {
     this.auth_info = auth_info;
-    this.authenticate();
   }
 
   public authenticate = async () => {
@@ -79,48 +83,36 @@ export class Shopgoodwill {
    * It really isn't necessary since you can rip the encrypted values from your browser, but it'll make initial config just a tad easier
    */
   private encrypt_login_value = (value: string): string => {
-    throw new Error(
-      "Not yet implemented. Please provide your pre-encrypted username and password"
-    );
-
-    // WORKS FOR USERNAME BUT NOT PASSWORD:
     const cipher = createCipheriv(
       "aes-256-cbc",
       this.ENCRYPTION_INFO.key,
       this.ENCRYPTION_INFO.iv
     );
+    const ciphertext =
+      cipher.update(value, "utf8", "base64") + cipher.final("base64");
 
-    cipher.update(value);
-
-    return encodeURIComponent(cipher.final("base64"));
-
-    // Original from Python:
-    // padded = pad(plaintext.encode(), Shopgoodwill.ENCRYPTION_INFO["block_size"])
-    // cipher = AES.new(
-    //     Shopgoodwill.ENCRYPTION_INFO["key"],
-    //     AES.MODE_CBC,
-    //     Shopgoodwill.ENCRYPTION_INFO["iv"],
-    // )
-    // ciphertext = cipher.encrypt(padded)
-    // return urllib.parse.quote(base64.b64encode(ciphertext))
+    // Same escaping as Python's urllib.parse.quote, which leaves "/" alone
+    return encodeURIComponent(ciphertext).replaceAll("%2F", "/");
   };
 
-  public get = async (path: string): Promise<ShopgoodwillApiResponse> =>
+  private request = async (
+    path: string,
+    options: RequestInit = {}
+  ): Promise<ShopgoodwillApiResponse> =>
     (await fetch(this.API_ROOT + path, {
       headers: this.shopgoodwill_session_headers,
+      signal: AbortSignal.timeout(this.REQUEST_TIMEOUT_MS),
+      ...options,
     })) as ShopgoodwillApiResponse;
+
+  public get = async (path: string): Promise<ShopgoodwillApiResponse> =>
+    this.request(path);
 
   public post = async (
     path: string,
     options?: RequestInit
   ): Promise<ShopgoodwillApiResponse> =>
-    (await fetch(this.API_ROOT + path, {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
-      headers: this.shopgoodwill_session_headers,
-      method: "POST",
-      ...options,
-    })) as ShopgoodwillApiResponse;
+    this.request(path, { method: "POST", ...options });
 
   /**
    *  Simple function to test an access token by looking at the user's saved searches
@@ -134,13 +126,17 @@ export class Shopgoodwill {
 
     const res = await this.post("/SaveSearches/GetSaveSearches");
     if (res.status === 200) {
-      // All good!
-    } else {
-      delete this.shopgoodwill_session_headers["Authorization"];
-      if (res.status !== 401) throw new Error(JSON.stringify(res));
+      return true;
     }
 
-    return true;
+    delete this.shopgoodwill_session_headers["Authorization"];
+    if (res.status === 401) {
+      // Expired or revoked: the caller logs in again
+      return false;
+    }
+    throw new Error(
+      `Shopgoodwill returned HTTP ${res.status} while checking the access token`
+    );
   };
 
   /**
@@ -172,6 +168,10 @@ export class Shopgoodwill {
     const res = await this.post("/SignIn/Login", {
       body: JSON.stringify(login_params),
     });
+
+    if (!res.ok) {
+      throw new Error(`Login failed: Shopgoodwill returned HTTP ${res.status}`);
+    }
 
     const resJson = await res.json();
     const token = resJson["accessToken"];
@@ -209,7 +209,17 @@ export class Shopgoodwill {
       }
     );
 
-    return (await res.json())["data"] as ShopgoodwillFavorite[];
+    if (!res.ok) {
+      throw new Error(
+        `Could not load favorites: Shopgoodwill returned HTTP ${res.status}`
+      );
+    }
+
+    const favorites = (await res.json())["data"];
+    if (!Array.isArray(favorites)) {
+      throw new Error("Could not load favorites: unexpected response");
+    }
+    return favorites as ShopgoodwillFavorite[];
   };
 
   /**
