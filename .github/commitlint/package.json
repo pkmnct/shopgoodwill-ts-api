@@ -1,0 +1,9 @@
+{
+  "name": "pr-title-check",
+  "private": true,
+  "description": "Only what the PR title check installs, kept apart from the library's dev tree",
+  "devDependencies": {
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4"
+  }
+}
