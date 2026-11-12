@@ -27,19 +27,26 @@
         "*.js",
         "*.d.ts",
         "*.map",
-        "!eslint.config.js"
+        "!eslint.config.js",
+        "!*.test.js",
+        "!*.test.d.ts",
+        "!*.test.js.map",
+        "!*.test.d.ts.map"
     ],
     "scripts": {
         "build": "tsc",
         "typecheck": "tsc --noEmit",
         "lint": "eslint .",
-        "prepublishOnly": "npm run build"
+        "prepublishOnly": "npm run build",
+        "test": "tsc && node --test \"*.test.js\""
     },
     "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@types/node": "^22.0.0",
+        "conventional-changelog-conventionalcommits": "^9.3.1",
         "eslint": "^10.14.0",
         "eslint-plugin-promise": "^7.3.0",
+        "semantic-release": "^25.0.9",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.72.2"
     }

@@ -10,6 +10,10 @@ updates:
     # version is usually pulled first
     cooldown:
       default-days: 5
+    # Titles must be conventional commits (see the PR title check)
+    commit-message:
+      prefix: chore
+      include: scope
     groups:
       development:
         dependency-type: development
@@ -17,6 +21,12 @@ updates:
     ignore:
       # Tracks the oldest supported Node major, not the newest release
       - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # Must match the conventional-changelog-writer that
+      # @semantic-release/release-notes-generator bundles (8 today): a newer
+      # preset major fails with "requires conventional-changelog-writer@9".
+      # Move it only together with that plugin; npm test checks the pairing.
+      - dependency-name: "conventional-changelog-conventionalcommits"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
@@ -29,3 +39,15 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /.github/commitlint
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: ci

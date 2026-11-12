@@ -1,0 +1,33 @@
+name: PR title
+
+# Pull requests are squash-merged, so the title becomes the commit message
+# that semantic-release reads. It must be a conventional commit.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    name: conventional title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      # Only commitlint, from its own small lockfile: no need for the
+      # project's whole dev tree
+      - run: npm ci --ignore-scripts --prefix .github/commitlint
+      # Run from there so --extends resolves against its node_modules
+      - run: echo "$PR_TITLE" | npx commitlint --extends @commitlint/config-conventional
+        working-directory: .github/commitlint
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}

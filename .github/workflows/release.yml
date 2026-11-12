@@ -1,0 +1,49 @@
+name: Release
+
+# Every merge to main is released by semantic-release: it reads the
+# conventional commit messages since the last release, picks the next version
+# (fix: patch, feat: minor, "!" or BREAKING CHANGE: major), publishes to npm
+# and creates the GitHub release with its notes. Nothing to release (docs:,
+# chore:, ci:, ...) means nothing happens.
+
+# It starts only after the CI workflow (Node 22, 24 and 26 plus lint) has
+# passed on the push to main, so a failing runtime is never published.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    if: github.repository == 'pkmnct/shopgoodwill-ts-api' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # tag and GitHub release
+      issues: write # comment on released issues
+      pull-requests: write # comment on released pull requests
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }} # the commit CI passed on
+          fetch-depth: 0 # semantic-release reads the tags and the history
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # ships an npm that supports trusted publishing
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
