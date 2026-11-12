@@ -18,7 +18,10 @@ export class ShopgoodwillError extends Error {
   }
 }
 
-/** Shopgoodwill refused the login or the session (HTTP 400/401/403, or no token). Sign in again, check the credentials. */
+/**
+ * Shopgoodwill refused the login (HTTP 400/401/403, or no token) or the
+ * session (HTTP 401/403). Call authenticate() again, then check the credentials.
+ */
 export class ShopgoodwillAuthError extends ShopgoodwillError {}
 
 /**
@@ -29,10 +32,17 @@ export class ShopgoodwillUnavailableError extends ShopgoodwillError {}
 
 const isUnavailableStatus = (status: number) => status >= 500 || status === 429;
 
-/** The right error class for an unsuccessful response. */
-const httpError = (message: string, status: number): ShopgoodwillError => {
+/**
+ * The right error class for an unsuccessful response. A 400 means refused
+ * credentials only on the login request; anywhere else it is a plain error.
+ */
+const httpError = (
+  message: string,
+  status: number,
+  isLogin = false
+): ShopgoodwillError => {
   const text = `${message}: Shopgoodwill returned HTTP ${status}`;
-  if (status === 400 || status === 401 || status === 403) {
+  if (status === 401 || status === 403 || (isLogin && status === 400)) {
     return new ShopgoodwillAuthError(text, status);
   }
   if (isUnavailableStatus(status)) {
@@ -87,7 +97,21 @@ export class Shopgoodwill {
     this.auth_info = auth_info;
   }
 
-  public authenticate = async () => {
+  private pending_authenticate?: Promise<void>;
+
+  /**
+   * Reuses the access token while it is valid and logs in again once it is
+   * not. Calls made while one is already running share it, so parallel
+   * callers cause one login, not several.
+   */
+  public authenticate = (): Promise<void> => {
+    this.pending_authenticate ??= this.run_authenticate().finally(() => {
+      this.pending_authenticate = undefined;
+    });
+    return this.pending_authenticate;
+  };
+
+  private run_authenticate = async (): Promise<void> => {
     if (this.auth_info) {
       if (
         this.auth_info.accessToken &&
@@ -170,6 +194,47 @@ export class Shopgoodwill {
     }
   };
 
+  /**
+   * Reads a JSON body. An empty or HTML body (a maintenance or challenge
+   * page) becomes a ShopgoodwillError that keeps the HTTP status, and a
+   * timeout or dropped connection while reading becomes an unavailable error,
+   * instead of a bare SyntaxError or TimeoutError.
+   */
+  private read_json = async (
+    res: ShopgoodwillApiResponse,
+    message: string
+  ): Promise<{ [key: string]: unknown }> => {
+    let body: unknown;
+    try {
+      body = await res.json();
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "";
+      if (name === "AbortError") {
+        throw error; // the caller's own abort
+      }
+      if (name === "SyntaxError") {
+        throw new ShopgoodwillError(
+          `${message}: Shopgoodwill did not answer with JSON`,
+          res.status
+        );
+      }
+      throw new ShopgoodwillUnavailableError(
+        name === "TimeoutError"
+          ? `${message}: Shopgoodwill did not finish answering within ${this.REQUEST_TIMEOUT_MS} ms`
+          : `${message}: the connection to Shopgoodwill was lost`,
+        res.status,
+        { cause: error }
+      );
+    }
+    if (typeof body !== "object" || body === null) {
+      throw new ShopgoodwillError(
+        `${message}: unexpected response`,
+        res.status
+      );
+    }
+    return body as { [key: string]: unknown };
+  };
+
   public get = async (path: string): Promise<ShopgoodwillApiResponse> =>
     this.request(path);
 
@@ -235,10 +300,10 @@ export class Shopgoodwill {
     });
 
     if (!res.ok) {
-      throw httpError("Login failed", res.status);
+      throw httpError("Login failed", res.status, true);
     }
 
-    const resJson = await res.json();
+    const resJson = await this.read_json(res, "Login failed");
     const token = resJson["accessToken"];
 
     if (token) {
@@ -256,8 +321,18 @@ export class Shopgoodwill {
   public get_saved_searches = async (): Promise<SavedSearch[]> => {
     this.check_auth();
     const res = await this.post("/SaveSearches/GetSaveSearches");
+    if (!res.ok) {
+      throw httpError("Could not load saved searches", res.status);
+    }
 
-    return (await res.json())["data"] as SavedSearch[];
+    const searches = (await this.read_json(res, "Could not load saved searches"))["data"];
+    if (!Array.isArray(searches)) {
+      throw new ShopgoodwillError(
+        "Could not load saved searches: unexpected response",
+        res.status
+      );
+    }
+    return searches as SavedSearch[];
   };
 
   /**
@@ -278,9 +353,12 @@ export class Shopgoodwill {
       throw httpError("Could not load favorites", res.status);
     }
 
-    const favorites = (await res.json())["data"];
+    const favorites = (await this.read_json(res, "Could not load favorites"))["data"];
     if (!Array.isArray(favorites)) {
-      throw new ShopgoodwillError("Could not load favorites: unexpected response");
+      throw new ShopgoodwillError(
+        "Could not load favorites: unexpected response",
+        res.status
+      );
     }
     // The API sends Pacific wall-clock strings with no offset; hand callers
     // real instants, which is also what ShopgoodwillFavorite declares. An
@@ -301,7 +379,10 @@ export class Shopgoodwill {
     note?: string
   ): Promise<void> => {
     this.check_auth();
-    await this.get(`/Favorite/AddToFavorite?itemId=${item_id}`);
+    const res = await this.get(`/Favorite/AddToFavorite?itemId=${item_id}`);
+    if (!res.ok) {
+      throw httpError(`Could not add item ${item_id} to favorites`, res.status);
+    }
 
     if (note) {
       await this.add_favorite_note(item_id, note);
@@ -326,14 +407,17 @@ export class Shopgoodwill {
     );
     if (filteredFavorite.length) {
       const watchlist_id = filteredFavorite[0].watchlistId;
-      await this.post("/Favorite/Save", {
+      const res = await this.post("/Favorite/Save", {
         body: JSON.stringify({
           notes: note,
           watchlistId: watchlist_id,
         }),
       });
+      if (!res.ok) {
+        throw httpError(`Could not save the note on item ${item_id}`, res.status);
+      }
     } else {
-      throw new Error(`Item ${item_id} not in user's favorites!`);
+      throw new ShopgoodwillError(`Item ${item_id} is not in the favorites`);
     }
   };
 }

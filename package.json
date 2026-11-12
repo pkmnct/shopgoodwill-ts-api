@@ -26,12 +26,9 @@
     "files": [
         "*.js",
         "*.d.ts",
-        "*.map",
         "!eslint.config.js",
         "!*.test.js",
-        "!*.test.d.ts",
-        "!*.test.js.map",
-        "!*.test.d.ts.map"
+        "!*.test.d.ts"
     ],
     "scripts": {
         "build": "tsc",

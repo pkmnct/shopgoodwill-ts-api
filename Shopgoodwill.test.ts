@@ -26,6 +26,7 @@ let hang: boolean;
 let loginStatus: number;
 let noToken: boolean;
 let favorites: unknown[];
+let favoritesHtml: boolean;
 
 before(async () => {
   server = http.createServer((req, res) => {
@@ -47,6 +48,10 @@ before(async () => {
         return json(req.headers.authorization === "Bearer forbidden" ? 403 : 401, {});
       }
       if (path.startsWith("/api/Favorite/GetAllFavoriteItemsByType")) {
+        if (favoritesHtml) {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          return res.end("<html>Down for maintenance</html>");
+        }
         return json(200, { data: favorites });
       }
       json(404, {});
@@ -67,6 +72,7 @@ beforeEach(() => {
   loginStatus = 200;
   noToken = false;
   favorites = [];
+  favoritesHtml = false;
 });
 
 const client = (auth: ConstructorParameters<typeof Shopgoodwill>[0]) => {
@@ -180,6 +186,29 @@ describe("authenticate", () => {
     );
   });
 
+  it("shares one login between parallel calls", async () => {
+    const api = client({ encryptedUsername: "u", encryptedPassword: "p" });
+    await Promise.all([api.authenticate(), api.authenticate(), api.authenticate()]);
+    assert.equal(logins().length, 1);
+  });
+
+  it("does not keep a failed login for the next call", async () => {
+    const api = client({ encryptedUsername: "u", encryptedPassword: "p" });
+    loginStatus = 503;
+    await assert.rejects(api.authenticate(), ShopgoodwillUnavailableError);
+    loginStatus = 200;
+    await api.authenticate();
+    assert.equal(logins().length, 2);
+  });
+
+  it("treats a 400 as refused credentials on login only", async () => {
+    loginStatus = 400;
+    await assert.rejects(
+      client({ encryptedUsername: "u", encryptedPassword: "p" }).authenticate(),
+      ShopgoodwillAuthError
+    );
+  });
+
   it("does not log in from the constructor", () => {
     client({ encryptedUsername: "u", encryptedPassword: "p" });
     assert.equal(seen.length, 0);
@@ -259,5 +288,44 @@ describe("get_favorites", () => {
     assert.equal(items.length, 2);
     assert.ok(Number.isNaN(items[0]!.endTime.getTime()));
     assert.equal(items[1]!.endTime.toISOString(), "2026-11-21T02:07:00.000Z");
+  });
+});
+
+describe("other endpoints", () => {
+  const signedIn = async () => {
+    const api = client({ encryptedUsername: "u", encryptedPassword: "p" });
+    await api.authenticate();
+    return api;
+  };
+
+  it("raises when adding a favorite is refused, instead of doing nothing", async () => {
+    const api = await signedIn();
+    await assert.rejects(
+      api.add_favorite(42),
+      (error: unknown) =>
+        error instanceof ShopgoodwillError &&
+        !(error instanceof ShopgoodwillAuthError) &&
+        error.status === 404
+    );
+  });
+
+  it("reports an HTML body as a ShopgoodwillError with the status, not a SyntaxError", async () => {
+    const api = await signedIn();
+    favoritesHtml = true;
+    await assert.rejects(
+      api.get_favorites("all"),
+      (error: unknown) =>
+        error instanceof ShopgoodwillError &&
+        error.status === 200 &&
+        /did not answer with JSON/.test(error.message) &&
+        !/maintenance/.test(error.message)
+    );
+  });
+
+  it("exports the favorites types' enum and the time helper from the package root", async () => {
+    const root = await import("./index.js");
+    assert.equal(typeof root.shopgoodwillTimeToDate, "function");
+    assert.equal(typeof root.ShopgoodwillFavoriteType, "object");
+    assert.equal(root.default, Shopgoodwill);
   });
 });
