@@ -43,7 +43,8 @@ before(async () => {
         return loginStatus === 200 ? json(200, noToken ? {} : { accessToken: "good" }) : json(loginStatus, {});
       }
       if (path.startsWith("/api/SaveSearches/GetSaveSearches")) {
-        return req.headers.authorization === "Bearer good" ? json(200, { data: [] }) : json(401, {});
+        if (req.headers.authorization === "Bearer good") return json(200, { data: [] });
+        return json(req.headers.authorization === "Bearer forbidden" ? 403 : 401, {});
       }
       if (path.startsWith("/api/Favorite/GetAllFavoriteItemsByType")) {
         return json(200, { data: favorites });
@@ -122,6 +123,19 @@ describe("authenticate", () => {
     assert.equal(logins().length, 1);
     await api.get_favorites("all");
     assert.equal(seen.at(-1)!.authorization, "Bearer good");
+  });
+
+  it("also treats a 403 on the token check as expired and logs in again", async () => {
+    const api = client({ accessToken: "forbidden", encryptedUsername: "u", encryptedPassword: "p" });
+    await api.authenticate();
+    assert.equal(logins().length, 1);
+  });
+
+  it("raises an auth error when used before authenticate()", async () => {
+    await assert.rejects(
+      client({ encryptedUsername: "u", encryptedPassword: "p" }).get_favorites("all"),
+      ShopgoodwillAuthError
+    );
   });
 
   it("raises a clear error for rejected credentials", async () => {

@@ -37,7 +37,7 @@ for (const item of await api.get_favorites("open")) {
 
 Failures about Shopgoodwill itself are `ShopgoodwillError`s (with `status` when there was a response); messages never contain response bodies, tokens or credentials.
 
-- `ShopgoodwillAuthError`: the login or session was refused (HTTP 400/401/403, or no token came back). Check the credentials; retrying will not help.
+- `ShopgoodwillAuthError`: the login or session was refused (HTTP 400/401/403, or no token came back). Check the credentials, or, if it came from a request after a successful login, the token has expired: call `authenticate()` again (it logs in again when the token is no longer valid). It is also what any method throws if used before `authenticate()`.
 - `ShopgoodwillUnavailableError`: the network failed, the request timed out, or Shopgoodwill answered 5xx or 429. Says nothing about the credentials, so retry later. The underlying error is in `cause`.
 
 An abort you request with your own `signal` is rethrown unchanged.

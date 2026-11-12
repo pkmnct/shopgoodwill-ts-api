@@ -195,7 +195,7 @@ export class Shopgoodwill {
     }
 
     delete this.shopgoodwill_session_headers["Authorization"];
-    if (res.status === 401) {
+    if (res.status === 401 || res.status === 403) {
       // Expired or revoked: the caller logs in again
       return false;
     }
@@ -207,7 +207,9 @@ export class Shopgoodwill {
    */
   private check_auth = (): boolean => {
     if (!this.shopgoodwill_session_headers["Authorization"]) {
-      throw new Error("Not authenticated");
+      throw new ShopgoodwillAuthError(
+        "Not authenticated: call and await authenticate() first"
+      );
     }
     return true;
   };
