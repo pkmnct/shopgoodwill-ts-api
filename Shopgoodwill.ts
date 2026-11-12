@@ -2,6 +2,45 @@ import { ShopgoodwillFavorite } from "./Favorite.js";
 import { createCipheriv } from "node:crypto";
 import { shopgoodwillTimeToDate } from "./ShopgoodwillTime.js";
 
+/**
+ * Everything this client throws on purpose about Shopgoodwill itself. Messages
+ * never include response bodies, tokens or credentials.
+ */
+export class ShopgoodwillError extends Error {
+  constructor(
+    message: string,
+    /** The HTTP status, when there was a response. */
+    readonly status?: number,
+    options?: ErrorOptions
+  ) {
+    super(message, options);
+    this.name = new.target.name;
+  }
+}
+
+/** Shopgoodwill refused the login or the session (HTTP 400/401/403, or no token). Sign in again, check the credentials. */
+export class ShopgoodwillAuthError extends ShopgoodwillError {}
+
+/**
+ * Shopgoodwill could not be reached or is failing (network error, timeout,
+ * HTTP 5xx or 429). Says nothing about the credentials: retry later.
+ */
+export class ShopgoodwillUnavailableError extends ShopgoodwillError {}
+
+const isUnavailableStatus = (status: number) => status >= 500 || status === 429;
+
+/** The right error class for an unsuccessful response. */
+const httpError = (message: string, status: number): ShopgoodwillError => {
+  const text = `${message}: Shopgoodwill returned HTTP ${status}`;
+  if (status === 400 || status === 401 || status === 403) {
+    return new ShopgoodwillAuthError(text, status);
+  }
+  if (isUnavailableStatus(status)) {
+    return new ShopgoodwillUnavailableError(text, status);
+  }
+  return new ShopgoodwillError(text, status);
+};
+
 export interface AuthInfo {
   userName?: string;
   password?: string;
@@ -108,13 +147,27 @@ export class Shopgoodwill {
       headers.set(name, value)
     );
     const timeout = AbortSignal.timeout(this.REQUEST_TIMEOUT_MS);
-    return (await fetch(this.API_ROOT + path, {
-      ...options,
-      headers,
-      signal: options.signal
-        ? AbortSignal.any([timeout, options.signal])
-        : timeout,
-    })) as ShopgoodwillApiResponse;
+    try {
+      return (await fetch(this.API_ROOT + path, {
+        ...options,
+        headers,
+        signal: options.signal
+          ? AbortSignal.any([timeout, options.signal])
+          : timeout,
+      })) as ShopgoodwillApiResponse;
+    } catch (error) {
+      // The caller's own abort is theirs: rethrow it unchanged
+      if (options.signal?.aborted) {
+        throw error;
+      }
+      throw new ShopgoodwillUnavailableError(
+        timeout.aborted
+          ? `Shopgoodwill did not answer within ${this.REQUEST_TIMEOUT_MS} ms`
+          : "Could not reach Shopgoodwill",
+        undefined,
+        { cause: error }
+      );
+    }
   };
 
   public get = async (path: string): Promise<ShopgoodwillApiResponse> =>
@@ -146,9 +199,7 @@ export class Shopgoodwill {
       // Expired or revoked: the caller logs in again
       return false;
     }
-    throw new Error(
-      `Shopgoodwill returned HTTP ${res.status} while checking the access token`
-    );
+    throw httpError("Could not check the access token", res.status);
   };
 
   /**
@@ -182,7 +233,7 @@ export class Shopgoodwill {
     });
 
     if (!res.ok) {
-      throw new Error(`Login failed: Shopgoodwill returned HTTP ${res.status}`);
+      throw httpError("Login failed", res.status);
     }
 
     const resJson = await res.json();
@@ -196,7 +247,7 @@ export class Shopgoodwill {
 
       return true;
     } else {
-      throw new Error("Login failed");
+      throw new ShopgoodwillAuthError("Login failed: no access token in the response");
     }
   };
 
@@ -222,14 +273,12 @@ export class Shopgoodwill {
     );
 
     if (!res.ok) {
-      throw new Error(
-        `Could not load favorites: Shopgoodwill returned HTTP ${res.status}`
-      );
+      throw httpError("Could not load favorites", res.status);
     }
 
     const favorites = (await res.json())["data"];
     if (!Array.isArray(favorites)) {
-      throw new Error("Could not load favorites: unexpected response");
+      throw new ShopgoodwillError("Could not load favorites: unexpected response");
     }
     // The API sends Pacific wall-clock strings with no offset; hand callers
     // real instants, which is also what ShopgoodwillFavorite declares. An

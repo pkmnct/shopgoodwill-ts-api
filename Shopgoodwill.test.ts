@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { Shopgoodwill } from "./Shopgoodwill.js";
+import {
+  Shopgoodwill,
+  ShopgoodwillAuthError,
+  ShopgoodwillError,
+  ShopgoodwillUnavailableError,
+} from "./Shopgoodwill.js";
 
 // A local fake of the parts of the buyer API the client uses. Nothing here is
 // a real credential: "good" and "stale" are made-up tokens.
@@ -19,6 +24,7 @@ let root: string;
 let seen: Seen[];
 let hang: boolean;
 let loginStatus: number;
+let noToken: boolean;
 let favorites: unknown[];
 
 before(async () => {
@@ -34,7 +40,7 @@ before(async () => {
         res.end(JSON.stringify(value));
       };
       if (path.startsWith("/api/SignIn/Login")) {
-        return loginStatus === 200 ? json(200, { accessToken: "good" }) : json(loginStatus, {});
+        return loginStatus === 200 ? json(200, noToken ? {} : { accessToken: "good" }) : json(loginStatus, {});
       }
       if (path.startsWith("/api/SaveSearches/GetSaveSearches")) {
         return req.headers.authorization === "Bearer good" ? json(200, { data: [] }) : json(401, {});
@@ -58,6 +64,7 @@ beforeEach(() => {
   seen = [];
   hang = false;
   loginStatus = 200;
+  noToken = false;
   favorites = [];
 });
 
@@ -121,7 +128,41 @@ describe("authenticate", () => {
     loginStatus = 401;
     await assert.rejects(
       client({ encryptedUsername: "u", encryptedPassword: "p" }).authenticate(),
-      /Login failed: Shopgoodwill returned HTTP 401/
+      (error: unknown) =>
+        error instanceof ShopgoodwillAuthError &&
+        error.status === 401 &&
+        /Login failed: Shopgoodwill returned HTTP 401/.test(error.message)
+    );
+  });
+
+  it("calls an outage an outage, not a rejected login", async () => {
+    for (const status of [500, 503, 429]) {
+      loginStatus = status;
+      await assert.rejects(
+        client({ encryptedUsername: "u", encryptedPassword: "p" }).authenticate(),
+        (error: unknown) =>
+          error instanceof ShopgoodwillUnavailableError && error.status === status
+      );
+    }
+  });
+
+  it("tells a missing token from an outage", async () => {
+    loginStatus = 200;
+    noToken = true;
+    await assert.rejects(
+      client({ encryptedUsername: "u", encryptedPassword: "p" }).authenticate(),
+      ShopgoodwillAuthError
+    );
+  });
+
+  it("is still a ShopgoodwillError with the class name for any of them", async () => {
+    loginStatus = 401;
+    await assert.rejects(
+      client({ encryptedUsername: "u", encryptedPassword: "p" }).authenticate(),
+      (error: unknown) =>
+        error instanceof ShopgoodwillError &&
+        error instanceof Error &&
+        error.name === "ShopgoodwillAuthError"
     );
   });
 
@@ -136,7 +177,25 @@ describe("requests", () => {
     hang = true;
     const api = client({});
     api.REQUEST_TIMEOUT_MS = 50;
-    await assert.rejects(api.get("/anything"), (error: Error) => error.name === "TimeoutError");
+    await assert.rejects(
+      api.get("/anything"),
+      (error: unknown) =>
+        error instanceof ShopgoodwillUnavailableError &&
+        /did not answer within 50 ms/.test(error.message) &&
+        (error.cause as Error).name === "TimeoutError"
+    );
+  });
+
+  it("reports an unreachable server as unavailable, with the cause", async () => {
+    const api = client({});
+    api.API_ROOT = "http://127.0.0.1:1/api";
+    await assert.rejects(
+      api.get("/x"),
+      (error: unknown) =>
+        error instanceof ShopgoodwillUnavailableError &&
+        error.cause instanceof Error &&
+        error.message === "Could not reach Shopgoodwill"
+    );
   });
 
   it("keeps the session headers when a caller adds its own", async () => {
@@ -155,7 +214,7 @@ describe("requests", () => {
     api.REQUEST_TIMEOUT_MS = 50;
     await assert.rejects(
       api.post("/x", { signal: new AbortController().signal }),
-      (error: Error) => error.name === "TimeoutError"
+      (error: unknown) => error instanceof ShopgoodwillUnavailableError
     );
     const controller = new AbortController();
     const pending = api.post("/x", { signal: controller.signal });

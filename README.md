@@ -22,6 +22,26 @@ The "encrypted" username and password use a fixed key that is public in Shopgood
 
 Requests go only to `buyerapi.shopgoodwill.com` and give up after `REQUEST_TIMEOUT_MS` (30 seconds by default).
 
+## Times
+
+Shopgoodwill sends Pacific wall-clock times with no offset. `get_favorites` converts `startTime` and `endTime` to real `Date`s. If a time cannot be read it is left as an Invalid Date rather than failing the whole list, and `toISOString()` throws on one (`JSON.stringify` writes `null`), so check first:
+
+```ts
+for (const item of await api.get_favorites("open")) {
+  if (Number.isNaN(item.endTime.getTime())) continue;
+  console.log(item.title, item.endTime.toISOString());
+}
+```
+
+## Errors
+
+Failures about Shopgoodwill itself are `ShopgoodwillError`s (with `status` when there was a response); messages never contain response bodies, tokens or credentials.
+
+- `ShopgoodwillAuthError`: the login or session was refused (HTTP 400/401/403, or no token came back). Check the credentials; retrying will not help.
+- `ShopgoodwillUnavailableError`: the network failed, the request timed out, or Shopgoodwill answered 5xx or 429. Says nothing about the credentials, so retry later. The underlying error is in `cause`.
+
+An abort you request with your own `signal` is rethrown unchanged.
+
 ## Releasing
 
 Every merge to `main` is released by [semantic-release](https://semantic-release.gitbook.io) once CI has passed. It reads the commit messages since the last release and picks the version: `fix:` is a patch, `feat:` a minor, and `feat!:` or a `BREAKING CHANGE:` footer a major. `docs:`, `chore:` and `ci:` release nothing. It then publishes to npm (with provenance, through npm trusted publishing, so there is no npm token) and creates the GitHub release.
