@@ -1,5 +1,6 @@
 import { ShopgoodwillFavorite } from "./Favorite.js";
 import { createCipheriv } from "node:crypto";
+import { shopgoodwillTimeToDate } from "./ShopgoodwillTime.js";
 
 export interface AuthInfo {
   userName?: string;
@@ -219,7 +220,18 @@ export class Shopgoodwill {
     if (!Array.isArray(favorites)) {
       throw new Error("Could not load favorites: unexpected response");
     }
-    return favorites as ShopgoodwillFavorite[];
+    // The API sends Pacific wall-clock strings with no offset; hand callers
+    // real instants, which is also what ShopgoodwillFavorite declares
+    return (favorites as ShopgoodwillFavorite[]).map((favorite) => {
+      const startTime = shopgoodwillTimeToDate(favorite.startTime);
+      const endTime = shopgoodwillTimeToDate(favorite.endTime);
+      if (Number.isNaN(endTime.getTime())) {
+        throw new Error(
+          `Could not load favorites: item ${favorite.itemId} has an unreadable end time`
+        );
+      }
+      return { ...favorite, startTime, endTime };
+    });
   };
 
   /**
