@@ -99,12 +99,23 @@ export class Shopgoodwill {
   private request = async (
     path: string,
     options: RequestInit = {}
-  ): Promise<ShopgoodwillApiResponse> =>
-    (await fetch(this.API_ROOT + path, {
-      headers: this.shopgoodwill_session_headers,
-      signal: AbortSignal.timeout(this.REQUEST_TIMEOUT_MS),
+  ): Promise<ShopgoodwillApiResponse> => {
+    // Caller headers are added to the session headers (so Authorization is
+    // kept unless the caller deliberately sets it), and a caller's signal is
+    // combined with the timeout instead of replacing it
+    const headers = new Headers(this.shopgoodwill_session_headers);
+    new Headers(options.headers).forEach((value, name) =>
+      headers.set(name, value)
+    );
+    const timeout = AbortSignal.timeout(this.REQUEST_TIMEOUT_MS);
+    return (await fetch(this.API_ROOT + path, {
       ...options,
+      headers,
+      signal: options.signal
+        ? AbortSignal.any([timeout, options.signal])
+        : timeout,
     })) as ShopgoodwillApiResponse;
+  };
 
   public get = async (path: string): Promise<ShopgoodwillApiResponse> =>
     this.request(path);
@@ -221,17 +232,14 @@ export class Shopgoodwill {
       throw new Error("Could not load favorites: unexpected response");
     }
     // The API sends Pacific wall-clock strings with no offset; hand callers
-    // real instants, which is also what ShopgoodwillFavorite declares
-    return (favorites as ShopgoodwillFavorite[]).map((favorite) => {
-      const startTime = shopgoodwillTimeToDate(favorite.startTime);
-      const endTime = shopgoodwillTimeToDate(favorite.endTime);
-      if (Number.isNaN(endTime.getTime())) {
-        throw new Error(
-          `Could not load favorites: item ${favorite.itemId} has an unreadable end time`
-        );
-      }
-      return { ...favorite, startTime, endTime };
-    });
+    // real instants, which is also what ShopgoodwillFavorite declares. An
+    // unreadable time becomes an Invalid Date for the caller to deal with,
+    // rather than one bad item failing the whole list.
+    return (favorites as ShopgoodwillFavorite[]).map((favorite) => ({
+      ...favorite,
+      startTime: shopgoodwillTimeToDate(favorite.startTime),
+      endTime: shopgoodwillTimeToDate(favorite.endTime),
+    }));
   };
 
   /**

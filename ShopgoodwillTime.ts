@@ -86,6 +86,9 @@ export function shopgoodwillTimeToDate(
   if (value instanceof Date) {
     return value;
   }
+  if (typeof value !== "string") {
+    return new Date(NaN);
+  }
   const match = WALL_CLOCK.exec(value.trim());
   if (!match) {
     return new Date(value);

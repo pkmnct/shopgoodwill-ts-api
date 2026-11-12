@@ -50,6 +50,7 @@ describe("shopgoodwillTimeToDate", () => {
     const date = new Date("2026-01-01T00:00:00Z");
     assert.equal(shopgoodwillTimeToDate(date), date);
     assert.ok(Number.isNaN(shopgoodwillTimeToDate("not a date").getTime()));
+    assert.ok(Number.isNaN(shopgoodwillTimeToDate(null as never).getTime()));
   });
 });
 
