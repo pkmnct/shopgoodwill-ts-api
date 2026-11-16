@@ -57,7 +57,68 @@ export interface AuthInfo {
   accessToken?: string;
   encryptedUsername?: string;
   encryptedPassword?: string;
+  /**
+   * A session saved from `getSession()` or `onSessionChange`. Its access
+   * token is used while it is valid, then its refresh token, and the
+   * credentials above (if any) only when both have run out.
+   */
+  session?: ShopgoodwillSession;
+  /** Sent as the site's "Remember me" when logging in. Default false. */
+  remember?: boolean;
 }
+
+/**
+ * Everything needed to carry on without the password, as plain JSON (times
+ * are ISO strings), so it can be written to a file as is. Treat it like a
+ * password for as long as the refresh token lasts.
+ */
+export interface ShopgoodwillSession {
+  accessToken: string;
+  /** From the token's own expiry; absent if it does not carry one. */
+  accessTokenExpiresAt?: string;
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
+  /**
+   * The address Shopgoodwill recorded for the refresh token. The site sends it
+   * back when refreshing, so this client does too.
+   */
+  refreshTokenIp?: string;
+}
+
+export interface ShopgoodwillOptions {
+  /**
+   * Called with the new session after every login and refresh, and awaited:
+   * save it here. A refresh may replace the refresh token, so a saved copy
+   * that is not updated can stop working.
+   */
+  onSessionChange?: (session: ShopgoodwillSession) => void | Promise<void>;
+}
+
+/** The expiry in a JWT's payload, if the token is a JWT that has one. */
+export const jwtExpiry = (token: string): Date | undefined => {
+  const payload = token.split(".")[1];
+  if (!payload) {
+    return undefined;
+  }
+  try {
+    const exp = (JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
+      exp?: unknown;
+    }).exp;
+    return typeof exp === "number" && Number.isFinite(exp)
+      ? new Date(exp * 1000)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const validDate = (value: unknown): Date | undefined => {
+  if (typeof value !== "string" && !(value instanceof Date)) {
+    return undefined;
+  }
+  const date = shopgoodwillTimeToDate(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+};
 
 export interface SavedSearch {
   todo?: undefined;
@@ -80,6 +141,13 @@ export class Shopgoodwill {
   public FAVORITES_MAX_NOTE_LENGTH = 256;
   /** Give up on a request to Shopgoodwill after this many milliseconds. */
   public REQUEST_TIMEOUT_MS = 30_000;
+  /**
+   * `authenticate()` refreshes a still-valid access token once it has less
+   * than this long left, so a session in regular use does not run out.
+   */
+  public REFRESH_BEFORE_MS = 7 * 24 * 60 * 60 * 1000;
+  /** Sent as clientIpAddress, as the reference client does. */
+  private CLIENT_IP_ADDRESS = "0.0.0.4";
 
   private shopgoodwill_session_headers: { [key: string]: string } = {
     "Content-Type": "application/json",
@@ -88,21 +156,71 @@ export class Shopgoodwill {
       "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:12.0) Gecko/20100101 Firefox/12.0",
   };
   private auth_info: AuthInfo;
+  private options: ShopgoodwillOptions;
+  private access_token_expires_at?: Date;
+  private refresh_token?: string;
+  private refresh_token_expires_at?: Date;
+  private refresh_token_ip?: string;
 
   /**
    * Stores the credentials only. Call `authenticate()` and await it before
    * using endpoints that need a login.
    */
-  constructor(auth_info: AuthInfo) {
-    this.auth_info = auth_info;
+  constructor(auth_info: AuthInfo, options: ShopgoodwillOptions = {}) {
+    // A copy: tokens are written to it, and must not leak into the caller's object
+    this.auth_info = { ...auth_info };
+    this.options = options;
+    const session = auth_info.session;
+    if (session) {
+      this.auth_info.accessToken ??= session.accessToken;
+      this.refresh_token = session.refreshToken;
+      this.refresh_token_expires_at = validDate(session.refreshTokenExpiresAt);
+      this.refresh_token_ip = session.refreshTokenIp;
+    }
+    if (this.auth_info.accessToken) {
+      this.access_token_expires_at =
+        (this.auth_info.accessToken === session?.accessToken
+          ? validDate(session.accessTokenExpiresAt)
+          : undefined) ?? jwtExpiry(this.auth_info.accessToken);
+    }
   }
+
+  /**
+   * The current session, to save and pass back as `session` later, or null
+   * before the first successful `authenticate()` (or `session` given).
+   */
+  public getSession = (): ShopgoodwillSession | null => {
+    const accessToken = this.auth_info.accessToken;
+    if (!accessToken) {
+      return null;
+    }
+    const session: ShopgoodwillSession = { accessToken };
+    if (this.access_token_expires_at) {
+      session.accessTokenExpiresAt = this.access_token_expires_at.toISOString();
+    }
+    if (this.refresh_token) {
+      session.refreshToken = this.refresh_token;
+      if (this.refresh_token_expires_at) {
+        session.refreshTokenExpiresAt = this.refresh_token_expires_at.toISOString();
+      }
+      if (this.refresh_token_ip) {
+        session.refreshTokenIp = this.refresh_token_ip;
+      }
+    }
+    return session;
+  };
 
   private pending_authenticate?: Promise<void>;
 
   /**
-   * Reuses the access token while it is valid and logs in again once it is
-   * not. Calls made while one is already running share it, so parallel
-   * callers cause one login, not several.
+   * Reuses the access token while it is valid (refreshing it when it is close
+   * to expiring), then tries the refresh token, and logs in with the
+   * credentials only when neither works. Calls made while one is already
+   * running share it, so parallel callers cause one login, not several.
+   *
+   * Throws ShopgoodwillAuthError when Shopgoodwill refuses the credentials,
+   * or when the session has run out and there are no credentials to log in
+   * with (the caller should ask the user to sign in again).
    */
   public authenticate = (): Promise<void> => {
     this.pending_authenticate ??= this.run_authenticate().finally(() => {
@@ -111,33 +229,169 @@ export class Shopgoodwill {
     return this.pending_authenticate;
   };
 
+  private expired = (at: Date | undefined, marginMs = 0): boolean =>
+    at !== undefined && Date.now() + marginMs >= at.getTime();
+
+  /**
+   * Whether to refresh an access token that still works. Measured in November
+   * 2026: a refresh gives a new 30-day access token but keeps the same
+   * refresh token, which still expires 30 days after the login. So refresh
+   * once the access token is close to expiring, and also once more just
+   * before the refresh token runs out, which gives the longest-lived access
+   * token there can be (about 60 days from the login in all).
+   */
+  private should_refresh_early = (): boolean => {
+    if (!this.refresh_token || this.expired(this.refresh_token_expires_at)) {
+      return false;
+    }
+    const margin = this.REFRESH_BEFORE_MS;
+    if (this.expired(this.access_token_expires_at, margin)) {
+      return true;
+    }
+    const access = this.access_token_expires_at;
+    const refresh = this.refresh_token_expires_at;
+    // After that last refresh the access token outlasts the refresh token by
+    // more than the margin, so this does not repeat on every call
+    return (
+      access !== undefined &&
+      refresh !== undefined &&
+      this.expired(refresh, margin) &&
+      access.getTime() <= refresh.getTime() + margin
+    );
+  };
+
   private run_authenticate = async (): Promise<void> => {
-    if (this.auth_info) {
-      if (
-        this.auth_info.accessToken &&
-        (await this.access_token_is_valid(this.auth_info.accessToken))
-      ) {
-        this.shopgoodwill_session_headers[
-          "Authorization"
-        ] = `Bearer ${this.auth_info.accessToken}`;
-      } else {
-        if (
-          this.auth_info.encryptedUsername &&
-          this.auth_info.encryptedPassword
-        ) {
-          await this.login(
-            this.auth_info.encryptedUsername,
-            this.auth_info.encryptedPassword
-          );
-        } else if (this.auth_info.userName && this.auth_info.password) {
-          await this.login(
-            this.encrypt_login_value(this.auth_info.userName),
-            this.encrypt_login_value(this.auth_info.password)
-          );
-        } else {
-          throw new Error("Invalid auth_info");
+    const accessToken = this.auth_info.accessToken;
+    // A token whose own expiry has passed is not worth asking about
+    if (
+      accessToken &&
+      !this.expired(this.access_token_expires_at) &&
+      (await this.access_token_is_valid(accessToken))
+    ) {
+      if (this.should_refresh_early()) {
+        // Still valid, so a failed early refresh is not worth failing over
+        await this.refresh().catch((error: unknown) => {
+          if (!(error instanceof ShopgoodwillError)) {
+            throw error;
+          }
+          // The token checked out a moment ago: keep using it
+          this.shopgoodwill_session_headers["Authorization"] = `Bearer ${accessToken}`;
+        });
+      }
+      return;
+    }
+
+    if (this.refresh_token && !this.expired(this.refresh_token_expires_at)) {
+      try {
+        await this.refresh();
+        return;
+      } catch (error) {
+        // An outage says nothing about the refresh token: keep it for next time
+        if (!(error instanceof ShopgoodwillAuthError)) {
+          throw error;
         }
       }
+    }
+
+    if (this.auth_info.encryptedUsername && this.auth_info.encryptedPassword) {
+      await this.login(this.auth_info.encryptedUsername, this.auth_info.encryptedPassword);
+    } else if (this.auth_info.userName && this.auth_info.password) {
+      await this.login(
+        this.encrypt_login_value(this.auth_info.userName),
+        this.encrypt_login_value(this.auth_info.password)
+      );
+    } else if (accessToken || this.refresh_token) {
+      throw new ShopgoodwillAuthError(
+        "The saved session has expired and there are no credentials to log in with: sign in again"
+      );
+    } else {
+      throw new Error("Invalid auth_info");
+    }
+  };
+
+  /**
+   * Stores the tokens from a login or refresh response, sends the access
+   * token from now on, and reports the new session.
+   */
+  private take_tokens = async (
+    body: { [key: string]: unknown },
+    message: string
+  ): Promise<void> => {
+    const token = body["accessToken"];
+    if (typeof token !== "string" || !token) {
+      throw new ShopgoodwillAuthError(`${message}: no access token in the response`);
+    }
+    this.auth_info.accessToken = token;
+    this.access_token_expires_at = jwtExpiry(token);
+    this.shopgoodwill_session_headers["Authorization"] = `Bearer ${token}`;
+
+    // An object ({ token, expires, createdByIp, ... }) as of 2026; a plain
+    // string is accepted too. Without one, the old refresh token is dropped:
+    // it is not known to be still good.
+    const refresh = body["refreshToken"];
+    const details =
+      typeof refresh === "object" && refresh !== null
+        ? (refresh as { [key: string]: unknown })
+        : undefined;
+    const refreshToken = typeof refresh === "string" ? refresh : details?.["token"];
+    if (typeof refreshToken === "string" && refreshToken) {
+      this.refresh_token = refreshToken;
+      // Pacific wall clock with no offset, like every other Shopgoodwill time
+      this.refresh_token_expires_at = validDate(details?.["expires"]);
+      const ip = details?.["createdByIp"];
+      this.refresh_token_ip = typeof ip === "string" && ip ? ip : undefined;
+    } else {
+      this.refresh_token = undefined;
+      this.refresh_token_expires_at = undefined;
+      this.refresh_token_ip = undefined;
+    }
+
+    const session = this.getSession();
+    if (session && this.options.onSessionChange) {
+      await this.options.onSessionChange(session);
+    }
+  };
+
+  /**
+   * Swaps the refresh token for a new access token (and, if Shopgoodwill
+   * sends one, a new refresh token). Throws ShopgoodwillAuthError when the
+   * refresh token is refused; it is then forgotten.
+   */
+  public refresh = async (): Promise<void> => {
+    const refreshToken = this.refresh_token;
+    if (!refreshToken) {
+      throw new ShopgoodwillAuthError("No refresh token to refresh with");
+    }
+    // The endpoint takes no bearer token, and the old one may have expired
+    delete this.shopgoodwill_session_headers["Authorization"];
+    const res = await this.post("/SignIn/RefreshToken", {
+      body: JSON.stringify({
+        refreshToken,
+        clientIpAddress: this.refresh_token_ip ?? this.CLIENT_IP_ADDRESS,
+      }),
+    });
+    if (!res.ok) {
+      const error = httpError("Refresh failed", res.status, true);
+      if (error instanceof ShopgoodwillAuthError) {
+        this.forget_refresh_token(refreshToken);
+      }
+      throw error;
+    }
+    const body = await this.read_json(res, "Refresh failed");
+    // A refused refresh token is a 200 with accessToken: null
+    if (typeof body["accessToken"] !== "string" || !body["accessToken"]) {
+      this.forget_refresh_token(refreshToken);
+      throw new ShopgoodwillAuthError("Refresh failed: Shopgoodwill refused the refresh token");
+    }
+    await this.take_tokens(body, "Refresh failed");
+  };
+
+  private forget_refresh_token = (refreshToken: string): void => {
+    // Only if a login has not replaced it meanwhile
+    if (this.refresh_token === refreshToken) {
+      this.refresh_token = undefined;
+      this.refresh_token_expires_at = undefined;
+      this.refresh_token_ip = undefined;
     }
   };
 
@@ -288,8 +542,8 @@ export class Shopgoodwill {
   ): Promise<boolean> => {
     const login_params = {
       browser: "firefox",
-      remember: false,
-      clientIpAddress: "0.0.0.4",
+      remember: this.auth_info.remember ?? false,
+      clientIpAddress: this.CLIENT_IP_ADDRESS,
       appVersion: "00099a1be3bb023ff17d",
       username: username,
       password: password,
@@ -303,19 +557,8 @@ export class Shopgoodwill {
       throw httpError("Login failed", res.status, true);
     }
 
-    const resJson = await this.read_json(res, "Login failed");
-    const token = resJson["accessToken"];
-
-    if (token) {
-      this.auth_info.accessToken = token as string;
-      this.shopgoodwill_session_headers[
-        "Authorization"
-      ] = `Bearer ${this.auth_info.accessToken}`;
-
-      return true;
-    } else {
-      throw new ShopgoodwillAuthError("Login failed: no access token in the response");
-    }
+    await this.take_tokens(await this.read_json(res, "Login failed"), "Login failed");
+    return true;
   };
 
   public get_saved_searches = async (): Promise<SavedSearch[]> => {
